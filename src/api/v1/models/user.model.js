@@ -24,8 +24,8 @@ class UserModel {
             );
             return rows;
         } catch (error) {
-            logger.error('Error in creating user:', error);
-            throw new Error('Failed to create user');
+            logger.error('Error in getting all users:', error);
+            throw new Error('Failed to get users');
         }
     }
 
@@ -58,14 +58,35 @@ class UserModel {
         }
     }
 
+    async update(id, data) {
+        try {
+            // Create SET clause dynamically from data object
+            const setClause = Object.keys(data)
+                .map(key => `${key} = ?`)
+                .join(', ');
+            const values = [...Object.values(data), id];
+
+            const [result] = await pool.query(
+                `UPDATE users 
+                 SET ${setClause}
+                 WHERE id = ?`,
+                values
+            );
+
+            if (result.affectedRows === 0) {
+                return null;
+            }
+
+            return { id, ...data };
+        } catch (error) {
+            logger.error('Error updating user:', error);
+            throw new Error('Failed to update user');
+        }
+    }
+
     async updateLastLogin(userId) {
         try {
-            await pool.query(
-                `UPDATE users 
-                 SET lastLoginAt = NOW() 
-                 WHERE id = ?`,
-                [userId]
-            );
+            return await this.update(userId, { lastLoginAt: new Date() });
         } catch (error) {
             logger.error('Error updating last login:', error);
             throw new Error('Failed to update last login');
@@ -74,12 +95,7 @@ class UserModel {
 
     async updatePassword(userId, hashedPassword) {
         try {
-            await pool.query(
-                `UPDATE users 
-                 SET password = ? 
-                 WHERE id = ?`,
-                [hashedPassword, userId]
-            );
+            return await this.update(userId, { password: hashedPassword });
         } catch (error) {
             logger.error('Error updating password:', error);
             throw new Error('Failed to update password');

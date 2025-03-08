@@ -66,9 +66,9 @@ class AuthService {
             }
 
             // Check if account is active
-            if (!user.data.isActive) {
-                throw new Error('ACCOUNT_DEACTIVATED');
-            }
+            // if (!user.data.isActive) {
+            //     throw new Error('ACCOUNT_DEACTIVATED');
+            // }
 
             // Verify password
             const isValidPassword = await bcrypt.compare(password, user.data.password);
