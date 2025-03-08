@@ -1,126 +1,188 @@
 // src/api/v1/services/auth.service.js
 const bcrypt = require('bcryptjs');
-const UserModel = require('../models/user.model');
-const jwtService = require('./jwt.service');
+const jwt = require('jsonwebtoken');
 const logger = require('../config/logger');
-const RoleModel = require('../models/role.model');
+const UserService = require('./user.service');
+const JwtService = require('./jwt.service');
 
 class AuthService {
-    async register(email, password) {
+    constructor() {
+        this.userService = UserService;
+        this.jwtService = JwtService;
+    }
+
+    async register(userData) {
         try {
-            // Check if user exists
-            const existingUser = await UserModel.findByEmail(email);
-            if (existingUser) {
-                throw new Error('User already exists');
+            // Check if user already exists
+            const existingUser = await this.userService.findByEmail(userData.email);
+            if (existingUser.data) {
+                throw new Error('USER_EXISTS');
             }
 
-            // Hash password
-            const hashedPassword = await bcrypt.hash(password, 10);
+            // Create new user
+            const result = await this.userService.create(userData);
+            
+            // Generate tokens
+            const { accessToken, refreshToken } = await this.generateTokens(result.data);
 
-            // Create user
-            const user = await UserModel.create({
-                email,
-                password: hashedPassword
-            });
-
-            // Assign default role
-            await UserModel.assignDefaultRole(user.id);
-
-            logger.info(`User registered successfully: ${email}`);
-            return { id: user.id, email: user.email };
+            return {
+                success: true,
+                data: {
+                    user: {
+                        id: result.data.id,
+                        email: result.data.email,
+                        role: result.data.role
+                    },
+                    tokens: {
+                        accessToken,
+                        refreshToken
+                    }
+                }
+            };
         } catch (error) {
-            logger.error('Registration error:', error);
-            throw error;
+            logger.error('Error in AuthService.register:', error);
+            if (error.message === 'USER_EXISTS') {
+                throw {
+                    success: false,
+                    statusCode: 409,
+                    message: 'User with this email already exists'
+                };
+            }
+            throw {
+                success: false,
+                statusCode: 500,
+                message: 'Failed to register user',
+                error: error.message
+            };
         }
     }
 
     async login(email, password) {
         try {
-            // Find user
-            const user = await UserModel.findByEmail(email);
-            if (!user) {
-                throw new Error('Invalid credentials');
+            // Find user by email
+            const user = await this.userService.findByEmail(email);
+            if (!user.data) {
+                throw new Error('INVALID_CREDENTIALS');
+            }
+
+            // Check if account is active
+            if (!user.data.isActive) {
+                throw new Error('ACCOUNT_DEACTIVATED');
             }
 
             // Verify password
-            const isValidPassword = await bcrypt.compare(password, user.password);
+            const isValidPassword = await bcrypt.compare(password, user.data.password);
             if (!isValidPassword) {
-                throw new Error('Invalid credentials');
+                throw new Error('INVALID_CREDENTIALS');
             }
 
-            // Get user roles
-            const roles = await RoleModel.getUserRoles(user.id);
-
-            // Generate tokens with role information
-            const accessToken = jwtService.generateAccessToken({
-                id: user.id,
-                email: user.email,
-                roles: roles.map(role => role.name)
-            });
-
-            const refreshToken = jwtService.generateRefreshToken({
-                id: user.id
-            });
+            // Generate tokens
+            const { accessToken, refreshToken } = await this.generateTokens(user.data);
 
             // Update last login
-            await UserModel.updateLastLogin(user.id);
+            await this.userService.update(user.data.id, {
+                lastLoginAt: new Date()
+            });
 
-            logger.info(`User logged in successfully: ${email}`);
             return {
-                user: {
-                    id: user.id,
-                    email: user.email,
-                    roles: roles.map(role => role.name)
-                },
-                tokens: {
-                    accessToken,
-                    refreshToken
+                success: true,
+                data: {
+                    user: {
+                        id: user.data.id,
+                        email: user.data.email,
+                        role: user.data.role
+                    },
+                    tokens: {
+                        accessToken,
+                        refreshToken
+                    }
                 }
             };
         } catch (error) {
-            logger.error('Login error:', error);
-            throw error;
-        }
-    }
-
-    async verifyToken(token) {
-        try {
-            const decoded = jwtService.verifyAccessToken(token);
-            const user = await UserModel.findById(decoded.id);
-            
-            if (!user) {
-                throw new Error('User not found');
+            logger.error('Error in AuthService.login:', error);
+            if (error.message === 'INVALID_CREDENTIALS') {
+                throw {
+                    success: false,
+                    statusCode: 401,
+                    message: 'Invalid email or password'
+                };
             }
-
-            return user;
-        } catch (error) {
-            logger.error('Token verification error:', error);
-            throw new Error('Invalid token');
+            if (error.message === 'ACCOUNT_DEACTIVATED') {
+                throw {
+                    success: false,
+                    statusCode: 403,
+                    message: 'Account is deactivated'
+                };
+            }
+            throw {
+                success: false,
+                statusCode: 500,
+                message: 'Failed to login',
+                error: error.message
+            };
         }
     }
 
-    async refreshAccessToken(refreshToken) {
+    async refreshToken(refreshToken) {
         try {
             // Verify refresh token
-            const decoded = jwtService.verifyRefreshToken(refreshToken);
+            const decoded = await this.jwtService.verifyRefreshToken(refreshToken);
             
             // Get user
-            const user = await UserModel.findById(decoded.id);
-            if (!user) {
-                throw new Error('User not found');
+            const user = await this.userService.findById(decoded.userId);
+            if (!user.success) {
+                throw new Error('INVALID_TOKEN');
             }
 
-            // Generate new access token
-            const accessToken = jwtService.generateAccessToken({
-                id: user.id,
-                email: user.email
-            });
+            // Generate new tokens
+            const tokens = await this.generateTokens(user.data);
 
-            return { accessToken };
+            return {
+                success: true,
+                data: {
+                    tokens
+                }
+            };
         } catch (error) {
-            logger.error('Token refresh error:', error);
-            throw new Error('Invalid refresh token');
+            logger.error('Error in AuthService.refreshToken:', error);
+            throw {
+                success: false,
+                statusCode: 401,
+                message: 'Invalid refresh token'
+            };
         }
+    }
+
+    async logout(userId) {
+        try {
+            // Here you might want to invalidate the refresh token
+            // This depends on your token management strategy
+            return {
+                success: true,
+                message: 'Logged out successfully'
+            };
+        } catch (error) {
+            logger.error('Error in AuthService.logout:', error);
+            throw {
+                success: false,
+                statusCode: 500,
+                message: 'Failed to logout',
+                error: error.message
+            };
+        }
+    }
+
+    async generateTokens(user) {
+        const accessToken = await this.jwtService.generateAccessToken({
+            userId: user.id,
+            role: user.role
+        });
+
+        const refreshToken = await this.jwtService.generateRefreshToken({
+            userId: user.id
+        });
+
+        return { accessToken, refreshToken };
     }
 }
 
