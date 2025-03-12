@@ -1,6 +1,7 @@
 // src/api/v1/controllers/auth.controller.js
 const authService = require('../../services/auth.service');
 const logger = require('../../config/logger');
+const jwtService = require('../../services/jwt.service');
 
 class AuthController {
     async register(req, res) {
@@ -56,13 +57,31 @@ class AuthController {
     async refreshToken(req, res) {
         try {
             const { refreshToken } = req.body;
-            const tokens = await authService.refreshAccessToken(refreshToken);
+            const tokens = await jwtService.refreshAccessToken(refreshToken);
             res.json({
                 status: 'success',
                 data: tokens
             });
         } catch (error) {
             logger.error(`Token refresh failed: ${error.message}`);
+            res.status(401).json({
+                status: 'error',
+                message: error.message
+            });
+        }
+    }
+
+    async validateToken(req, res) {
+        try {
+            const { token, type } = req.body;
+            console.log(token, type);
+            const isValid = await jwtService.validateToken(token, type);
+            res.json({
+                status: 'success',
+                data: isValid
+            });
+        } catch (error) {
+            logger.error(`Token validation failed: ${error.message}`);
             res.status(401).json({
                 status: 'error',
                 message: error.message

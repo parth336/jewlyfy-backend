@@ -2,8 +2,10 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const logger = require('../config/logger');
+const pool = require('../config/database');
 const UserService = require('./user.service');
 const JwtService = require('./jwt.service');
+const { AppError } = require('../middleware/error.middleware');
 
 class AuthService {
     constructor() {
@@ -13,176 +15,113 @@ class AuthService {
 
     async register(userData) {
         try {
-            // Check if user already exists
-            const existingUser = await this.userService.findByEmail(userData.email);
-            if (existingUser.data) {
-                throw new Error('USER_EXISTS');
+            // Check if user exists
+            const [existingUser] = await pool.query(
+                'SELECT id FROM users WHERE email = ?',
+                [userData.email]
+            );
+
+            if (existingUser.length > 0) {
+                logger.error('Registration failed: User exists', {
+                    email: userData.email
+                });
+                throw new Error('User with this email already exists');
             }
 
-            // Create new user
-            const result = await this.userService.create(userData);
-            
-            // Generate tokens
-            const { accessToken, refreshToken } = await this.generateTokens(result.data);
+            // Hash password
+            const hashedPassword = await bcrypt.hash(userData.password, 10);
+
+            // Create user
+            const [result] = await pool.query(
+                'INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, ?)',
+                [userData.email, hashedPassword, userData.name, 'user']
+            );
+
+            logger.info('User registered successfully', {
+                userId: result.insertId
+            });
 
             return {
-                success: true,
-                data: {
-                    user: {
-                        id: result.data.id,
-                        email: result.data.email,
-                        role: result.data.role
-                    },
-                    tokens: {
-                        accessToken,
-                        refreshToken
-                    }
-                }
+                id: result.insertId,
+                email: userData.email,
+                name: userData.name
             };
         } catch (error) {
-            logger.error('Error in AuthService.register:', error);
-            if (error.message === 'USER_EXISTS') {
-                throw {
-                    success: false,
-                    statusCode: 409,
-                    message: 'User with this email already exists'
-                };
-            }
-            throw {
-                success: false,
-                statusCode: 500,
-                message: 'Failed to register user',
-                error: error.message
-            };
+            logger.error('Registration error:', error);
+            throw new Error('Registration failed');
         }
     }
 
     async login(email, password) {
         try {
-            // Find user by email
-            const user = await this.userService.findByEmail(email);
-            if (!user.data) {
-                throw new Error('INVALID_CREDENTIALS');
+            if (!email || !password) {
+                throw new Error('Email and password are required');
             }
 
-            // Check if account is active
-            // if (!user.data.isActive) {
-            //     throw new Error('ACCOUNT_DEACTIVATED');
-            // }
+            const [users] = await pool.query(
+                `SELECT 
+                    u.id,
+                    u.email,
+                    u.password,
+                    r.name as role_name,
+                    r.id as role_id,
+                    r.description as role_description
+                FROM users u
+                LEFT JOIN user_roles ur ON u.id = ur.userId
+                LEFT JOIN roles r ON ur.roleId = r.id
+                WHERE u.email = ?`,
+                [email]
+            );
 
-            // Verify password
-            const isValidPassword = await bcrypt.compare(password, user.data.password);
+            const user = users[0];
+            if (!user) {
+                logger.warn('Login attempt with non-existent email', {
+                    email: email
+                });
+                throw new Error('Invalid credentials');
+            }
+
+            const isValidPassword = await bcrypt.compare(password, user.password);
             if (!isValidPassword) {
-                throw new Error('INVALID_CREDENTIALS');
+                logger.warn('Invalid password attempt', {
+                    userId: user.id
+                });
+                throw new Error('Invalid credentials');
             }
 
-            // Generate tokens
-            const { accessToken, refreshToken } = await this.generateTokens(user.data);
+            // Use JwtService to generate tokens
+            const tokens = await this.jwtService.generateTokens(user);
 
-            // Update last login
-            await this.userService.update(user.data.id, {
-                lastLoginAt: new Date()
+            logger.info('User logged in successfully', {
+                userId: user.id
             });
 
             return {
-                success: true,
-                data: {
-                    user: {
-                        id: user.data.id,
-                        email: user.data.email,
-                        role: user.data.role
-                    },
-                    tokens: {
-                        accessToken,
-                        refreshToken
-                    }
-                }
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    name: user.name,
+                    role: user.role_name
+                },
+                ...tokens
             };
         } catch (error) {
-            logger.error('Error in AuthService.login:', error);
-            if (error.message === 'INVALID_CREDENTIALS') {
-                throw {
-                    success: false,
-                    statusCode: 401,
-                    message: 'Invalid email or password'
-                };
-            }
-            if (error.message === 'ACCOUNT_DEACTIVATED') {
-                throw {
-                    success: false,
-                    statusCode: 403,
-                    message: 'Account is deactivated'
-                };
-            }
-            throw {
-                success: false,
-                statusCode: 500,
-                message: 'Failed to login',
-                error: error.message
-            };
+            logger.error('Login error:', error);
+            throw new Error('Login failed');
         }
     }
 
-    async refreshToken(refreshToken) {
+    async revokeUserTokens(userId) {
         try {
-            // Verify refresh token
-            const decoded = await this.jwtService.verifyRefreshToken(refreshToken);
-            
-            // Get user
-            const user = await this.userService.findById(decoded.userId);
-            if (!user.success) {
-                throw new Error('INVALID_TOKEN');
-            }
-
-            // Generate new tokens
-            const tokens = await this.generateTokens(user.data);
-
-            return {
-                success: true,
-                data: {
-                    tokens
-                }
-            };
+            await pool.query(
+                'DELETE FROM refresh_tokens WHERE user_id = ?',
+                [userId]
+            );
+            logger.info('User tokens revoked', { userId });
         } catch (error) {
-            logger.error('Error in AuthService.refreshToken:', error);
-            throw {
-                success: false,
-                statusCode: 401,
-                message: 'Invalid refresh token'
-            };
+            logger.error('Failed to revoke user tokens:', error);
+            throw new AppError('Failed to revoke user tokens', 500);
         }
-    }
-
-    async logout(userId) {
-        try {
-            // Here you might want to invalidate the refresh token
-            // This depends on your token management strategy
-            return {
-                success: true,
-                message: 'Logged out successfully'
-            };
-        } catch (error) {
-            logger.error('Error in AuthService.logout:', error);
-            throw {
-                success: false,
-                statusCode: 500,
-                message: 'Failed to logout',
-                error: error.message
-            };
-        }
-    }
-
-    async generateTokens(user) {
-        const accessToken = await this.jwtService.generateAccessToken({
-            userId: user.id,
-            role: user.role
-        });
-
-        const refreshToken = await this.jwtService.generateRefreshToken({
-            userId: user.id
-        });
-
-        return { accessToken, refreshToken };
     }
 }
 

@@ -14,8 +14,14 @@ const refreshTokenSchema = Joi.object({
     refreshToken: Joi.string().required()
 });
 
+const validateTokenSchema = Joi.object({
+    token: Joi.string().required(),
+    type: Joi.string().valid('access', 'refresh').required()
+});
+
 module.exports = {
     registerSchema,
     loginSchema,
-    refreshTokenSchema
+    refreshTokenSchema,
+    validateTokenSchema
 };
