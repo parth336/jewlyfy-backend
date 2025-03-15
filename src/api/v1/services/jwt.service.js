@@ -3,13 +3,16 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const logger = require('../config/logger');
 const pool = require('../config/database');
+const userModel = require('../models/user.model');
 const { AppError } = require('../middleware/error.middleware');
 
 class JwtService {
     async generateTokens(user) {
         try {
+            logger.debug('Generating tokens', { userId: user.id });
+
             if (!user?.id) {
-                logger.error('Invalid user data for token generation');
+                logger.error('Invalid user data for token generation', { user });
                 throw new AppError('Invalid user data', 400);
             }
 
@@ -46,7 +49,8 @@ class JwtService {
             await this.storeRefreshToken(user.id, refreshToken);
 
             logger.info('Tokens generated successfully', {
-                userId: user.id
+                userId: user.id,
+                tokenTypes: ['access', 'refresh']
             });
 
             return {
@@ -54,13 +58,65 @@ class JwtService {
                 refreshToken,
             };
         } catch (error) {
-            logger.error('Token generation failed:', error);
-            throw new AppError('Failed to generate authentication tokens', 500);
+            logger.error('Token generation failed', {
+                error: error.message,
+                userId: user?.id
+            });
+            throw error;
+        }
+    }
+
+
+    async generateResetToken(user) {
+        try {
+            logger.debug('Generating tokens', { userId: user.id });
+
+            if (!user?.id) {
+                logger.error('Invalid user data for token generation', { user });
+                throw new AppError('Invalid user data', 400);
+            }
+
+            const accessSecret = process.env.JWT_SECRET;
+            const refreshSecret = process.env.JWT_REFRESH_SECRET;
+
+            if (!accessSecret || !refreshSecret) {
+                logger.error('JWT secrets not configured');
+                throw new AppError('Authentication service configuration error', 500);
+            }
+
+            // Generate access token
+            const resetToken = jwt.sign(
+                {
+                    userId: user.id,
+                    email: user.email,
+                    role: user.role
+                },
+                accessSecret,
+                { expiresIn:'1h' }
+            );
+
+            logger.info('Reset Token generated successfully', {
+                userId: user.id,
+                tokenTypes: ['access']
+            });
+
+            return {
+                resetToken
+            };
+        } catch (error) {
+            logger.error('Token generation failed', {
+                error: error.message,
+                userId: user?.id
+            });
+            throw error;
         }
     }
 
     async validateToken(token, type = 'access') {
+        const startTime = Date.now();
         try {
+            logger.debug('Validating token', { type });
+
             if (!token) {
                 throw new Error('No token provided');
             }
@@ -80,26 +136,22 @@ class JwtService {
                 decoded = await this.validateRefreshToken(token);
             } else {
                 decoded = jwt.verify(token, secret);
-                console.log(decoded);
             }
 
-            logger.debug('Token validated successfully', {
+            logger.info('Token validated successfully', {
+                type,
                 userId: decoded.userId,
-                tokenType: type
+                duration: Date.now() - startTime
             });
 
             return decoded;
         } catch (error) {
-            if (error instanceof jwt.TokenExpiredError) {
-                logger.warn('Token expired', { type });
-                throw new Error('Token has expired');
-            }
-            if (error instanceof jwt.JsonWebTokenError) {
-                logger.warn('Invalid token', { type });
-                throw new Error('Invalid token');
-            }
-            logger.error('Token validation error:', error);
-            throw new Error('Token validation failed');
+            logger.error('Token validation failed', {
+                type,
+                error: error.message,
+                duration: Date.now() - startTime
+            });
+            throw error;
         }
     }
 
@@ -108,7 +160,7 @@ class JwtService {
             if (!token) {
                 throw new AppError('No refresh token provided', 401);
             }
-
+ 
             const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
             const [tokens] = await pool.query(
                 `SELECT * FROM refresh_tokens 
@@ -145,21 +197,8 @@ class JwtService {
         try {
             const decoded = await this.validateRefreshToken(refreshToken);
             
-            const [users] = await pool.query(
-                `SELECT 
-                    u.id,
-                    u.email,
-                    r.name as role_name,
-                    r.id as role_id,
-                    r.description as role_description
-                FROM users u
-                LEFT JOIN user_roles ur ON u.id = ur.userId
-                LEFT JOIN roles r ON ur.roleId = r.id
-                WHERE u.id = ?`,
-                [decoded.userId]
-            );
+            const user = await userModel.findById(decoded.userId);   
 
-            const user = users[0];
             if (!user) {
                 throw new AppError('User not found', 404);
             }

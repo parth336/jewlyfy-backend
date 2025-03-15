@@ -3,12 +3,12 @@ const pool = require('../config/database');
 const logger = require('../config/logger');
 
 class UserModel {
-    async create({ email, password }) {
+    async create({ email, password, firstName, lastName, phone, address, city, state, country, zipCode, profile_pic, is_active }) {
         try {
             const [result] = await pool.query(
-                `INSERT INTO users (email, password) 
-                 VALUES (?, ?)`,
-                [email, password]
+                `INSERT INTO users (email, password, firstName, lastName, phone, address, city, state, country, zipCode, profile_pic, is_active) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [email, password, firstName, lastName, phone, address, city, state, country, zipCode, profile_pic, is_active]
             );
             return { id: result.insertId, email };
         } catch (error) {
@@ -32,8 +32,20 @@ class UserModel {
     async findByEmail(email) {
         try {
             const [rows] = await pool.query(
-                `SELECT * FROM users 
-                 WHERE email = ?`,
+                `SELECT 
+                    u.id,
+                    u.email,
+                    u.password,
+                    u.otp,
+                    u.otpExpresAt,  
+                    u.isEmailVerified,
+                    r.name as role_name,
+                    r.id as role_id,
+                    r.description as role_description
+                FROM users u
+                LEFT JOIN user_roles ur ON u.id = ur.userId
+                LEFT JOIN roles r ON ur.roleId = r.id
+                WHERE u.email = ?`,
                 [email]
             );
             return rows[0];
@@ -46,9 +58,16 @@ class UserModel {
     async findById(id) {
         try {
             const [rows] = await pool.query(
-                `SELECT id, email 
-                 FROM users 
-                 WHERE id = ?`,
+                `SELECT 
+                u.id,
+                u.email,
+                r.name as role_name,
+                r.id as role_id,
+                r.description as role_description   
+                FROM users u
+                LEFT JOIN user_roles ur ON u.id = ur.userId
+                LEFT JOIN roles r ON ur.roleId = r.id
+                WHERE u.id = ?`,
                 [id]
             );
             return rows[0];
@@ -121,6 +140,14 @@ class UserModel {
         }
     }
 
+    async assignRole(userId, roleId) {
+        try {
+            await pool.query('INSERT INTO user_roles (userId, roleId) VALUES (?, ?)', [userId, roleId]);
+        } catch (error) {
+            logger.error('Error assigning role:', error);
+            throw new Error('Failed to assign role');
+        }
+    }
     async hasRole(userId, roleName) {
         try {
             const [rows] = await pool.query(

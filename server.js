@@ -7,6 +7,7 @@ const logger = require('./src/api/v1/config/logger');
 const pool = require('./src/api/v1/config/database');
 const { executeMigrations } = require('./src/utils/database');
 const { errorHandler, AppError } = require('./src/api/v1/middleware/error.middleware');
+const requestLogger = require('./src/api/v1/middleware/logging.middleware');
 
 const app = express();
 
@@ -25,6 +26,9 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Add logging middleware
+app.use(requestLogger);
 
 // Routes
 const authRoutes = require('./src/api/v1/routes/auth.route');

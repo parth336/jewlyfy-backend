@@ -13,43 +13,117 @@ try {
     console.error('Error creating logs directory:', error);
 }
 
-// Simple format for all logs
-const simpleFormat = winston.format.combine(
-    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    winston.format.colorize(),
-    winston.format.printf(({ timestamp, level, message }) => {
-        return `${timestamp} ${level}: ${message}`;
-    })
+// Define log levels
+const levels = {
+    error: 0,
+    warn: 1,
+    info: 2,
+    http: 3,
+    debug: 4
+};
+
+// Define colors for each level
+const colors = {
+    error: 'red',
+    warn: 'yellow',
+    info: 'green',
+    http: 'magenta',
+    debug: 'white'
+};
+
+// Add colors to Winston
+winston.addColors(colors);
+
+// Define log format
+const format = winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
+    winston.format.colorize({ all: true }),
+    winston.format.printf(
+        (info) => `${info.timestamp} ${info.level}: ${info.message}${info.data ? ' - ' + JSON.stringify(info.data) : ''}`
+    )
 );
 
-// Create logger instance
+// Define which logs to print based on environment
+const level = () => {
+    const env = process.env.NODE_ENV || 'development';
+    return env === 'development' ? 'debug' : 'warn';
+};
+
+// Create separate transports for different types of logs
+const transports = [
+    // Console transport
+    new winston.transports.Console(),
+    
+    // Error log file
+    new winston.transports.File({
+        filename: path.join(__dirname, '../../../../logs/error.log'),
+        level: 'error',
+    }),
+    
+    // All logs file
+    new winston.transports.File({
+        filename: path.join(__dirname, '../../../../logs/combined.log'),
+    }),
+];
+
+// Create the logger
 const logger = winston.createLogger({
-    level: 'debug',
-    format: simpleFormat,
-    transports: [
-        // Console logging
-        new winston.transports.Console(),
-        // File logging
-        new winston.transports.File({ 
-            filename: path.join(logsDir, 'app.log')
-        })
-    ]
+    level: level(),
+    levels,
+    format,
+    transports,
 });
 
-// Helper methods for structured logging
-logger.logRequest = (req, res, duration) => {
-    logger.info(`${req.method} ${req.originalUrl} - ${duration}ms`);
+// Create standardized logging functions
+const standardLogger = {
+    error: (message, data = {}) => {
+        logger.error(message, { data });
+    },
+
+    warn: (message, data = {}) => {
+        logger.warn(message, { data });
+    },
+
+    info: (message, data = {}) => {
+        logger.info(message, { data });
+    },
+
+    debug: (message, data = {}) => {
+        logger.debug(message, { data });
+    },
+
+    http: (message, data = {}) => {
+        logger.http(message, { data });
+    },
+
+    // Specific logging functions for common scenarios
+    logRequest: (req, res, duration) => {
+        logger.http('API Request', {
+            method: req.method,
+            path: req.path,
+            duration: `${duration}ms`,
+            status: res.statusCode,
+            userIP: req.ip,
+            userId: req.user?.id
+        });
+    },
+
+    logDB: (operation, duration, query = '') => {
+        logger.debug('Database Operation', {
+            operation,
+            duration: `${duration}ms`,
+            query: query.replace(/\s+/g, ' ').trim()
+        });
+    },
+
+    logAuth: (action, userId, success, details = {}) => {
+        const level = success ? 'info' : 'warn';
+        logger[level](`Authentication ${action}`, {
+            userId,
+            success,
+            ...details
+        });
+    }
 };
 
-logger.logError = (error, req = null) => {
-    const message = req ? 
-        `Error at ${req.method} ${req.originalUrl}: ${error.message}` :
-        `Error: ${error.message}`;
-    logger.error(message);
-};
-
-logger.logDB = (operation, duration) => {
-    logger.debug(`DB ${operation} - ${duration}ms`);
-};
-
-module.exports = logger;
+module.exports = standardLogger;
